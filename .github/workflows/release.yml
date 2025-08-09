@@ -29,7 +29,7 @@ jobs:
           ext=""
           if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -o dist/mycli-${{ matrix.goos }}-${{ matrix.goarch }}$ext ./cmd/mycli
+            go build -o dist/mault-${{ matrix.goos }}-${{ matrix.goarch }}$ext .
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
