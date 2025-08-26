@@ -1,32 +1,47 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"mault/internal/crypto"
+	"mault/internal/prompt"
 	"mault/internal/storage"
 	"mault/internal/storage/base"
 	"mault/internal/storage/secret"
+	"os"
 
 	"github.com/urfave/cli/v2"
-	"gorm.io/gorm"
 )
 
 // Create a secret
 var createC *cli.Command = &cli.Command{
-	Name: "create",
+	Name:  "create",
 	Usage: "Create a new secret",
 	Args:  false,
 	Action: func(ctx *cli.Context) error {
-		db, err := storage.AccessDatabase()
+		// Accessing the database
+		manager, err := storage.GetDatabaseManager(nil)
 		if err != nil {
-			return fmt.Errorf("accessing the database error: %v", err)
+			return fmt.Errorf("create command failed: %w", err)
 		}
 
-		if !base.IsInitialized(db) {
-			return fmt.Errorf("you haven't initialized the mault yet")
+		// Perform health check to ensure database is accessible
+		if err := manager.HealthCheck(ctx.Context); err != nil {
+			return fmt.Errorf("create command failed database health check: %w", err)
 		}
 
-		return CreateSecret(db)
+		// Get database connection with context
+		db := manager.GetDBWithContext(ctx.Context)
+
+		// Accessing the base, which holds the master password data
+		bm := base.NewManager(db)
+		if !bm.IsInitialized() {
+			return fmt.Errorf("you haven't initialized the base yet")
+		}
+
+		// Accessing the secrets
+		sm := secret.NewManager(db)
+		return createSecret(ctx.Context, bm, sm)
 	},
 }
 
@@ -34,12 +49,10 @@ var createC *cli.Command = &cli.Command{
 // While typing the secret and the master password is not visible by default.
 // Using the salt and master, application creates a key in order to create nonce and ciphertext.
 // Then stores the key, nonce and ciphertext in the database.
-func CreateSecret(db *gorm.DB) error {
-	var key string
-	fmt.Print("Enter the name of the secret: ")
-	_, err := fmt.Scanln(&key)
+func createSecret(ctx context.Context, bm *base.Manager, sm *secret.Manager) error {
+	key, err := prompt.GetKey(os.Stdin)
 	if err != nil {
-		return fmt.Errorf("could not scan the key: %v", err.Error())
+		return err
 	}
 
 	secretPassword, err := crypto.ReadPassword("secret")
@@ -47,28 +60,17 @@ func CreateSecret(db *gorm.DB) error {
 		return fmt.Errorf("reading password error: %v", err)
 	}
 
-	master, err := crypto.ReadPassword("master password")
+	result, err := bm.Authenticate(ctx)
 	if err != nil {
-		return fmt.Errorf("reading password error: %v", err)
+		return err
 	}
 
-	salt, err := base.GetSalt(db)
-	if err != nil {
-		return fmt.Errorf("getting salt error: %v", err)
-	}
-
-	derivedKey := crypto.GenerateDerivedKey(master, salt)
-
-	if !base.IsMatch(db, derivedKey) {
-		return fmt.Errorf("authentication failed")
-	}
-
-	nonce, ciphertext, err := crypto.EncryptWithAESGCM(secretPassword, derivedKey)
+	nonce, ciphertext, err := crypto.EncryptWithAESGCM(secretPassword, result.DerivedKey)
 	if err != nil {
 		return fmt.Errorf("encryption error: %v", err)
 	}
 
-	if err := secret.Create(db, secret.Secret{
+	if err := sm.CreateSecret(ctx, &secret.Record{
 		Key:        key,
 		Nonce:      nonce,
 		CipherText: ciphertext,

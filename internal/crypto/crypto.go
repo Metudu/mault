@@ -5,13 +5,13 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"fmt"
+	"mault/internal/cerror"
 	"mault/internal/storage/secret"
 	"os"
-	"os/signal"
+	"regexp"
 	"syscall"
 
 	"golang.org/x/crypto/argon2"
-	"golang.org/x/term"
 )
 
 // Generates a random salt
@@ -22,32 +22,36 @@ func GenerateSalt(bytes int) []byte {
 	return salt
 }
 
+func ReadPassword(passwordType string) ([]byte, error) {
+	return read(passwordType, &Terminal{}, &System{}, &Signal{})
+}
+
 // Reads password from stdin and returns it with a nil error value if no error occures.
 // Can be exited immediately by Ctrl+C combination.
-func ReadPassword(passwordType string) ([]byte, error) {
-	oldState, err := term.GetState(int(os.Stdin.Fd()))
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
+func read(passwordType string, t TerminalOps, s SystemOps, sig SignalOps) ([]byte, error) {
+	oldState, err := t.GetState(s.Fd())
+	defer t.Restore(s.Fd(), oldState)
 	if err != nil {
-		return nil, fmt.Errorf("could not get the current terminal state: %v", err)
+		return nil, &cerror.Error{Operation: "Get terminal state", Cause: err.Error()}
 	}
 
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	sig.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
-		term.Restore(int(os.Stdin.Fd()), oldState) // The error this function may return is ignored for now.
+		t.Restore(s.Fd(), oldState) // The error this function may return is ignored for now.
 		fmt.Println("\nAborted.")
-		os.Exit(1)
+		s.Exit(1)
 	}()
 
 	fmt.Printf("Enter the %v: ", passwordType)
 
-	password, err := term.ReadPassword(int(os.Stdin.Fd()))
+	password, err := t.ReadPassword(s.Fd())
 	fmt.Println()
-	signal.Stop(c)
+	sig.Stop(c)
 
 	if err != nil {
-		return nil, fmt.Errorf("could not read the %v: %v", passwordType, err)
+		return nil, &cerror.Error{Operation: "Read password", Cause: err.Error()}
 	}
 
 	return password, nil
@@ -70,11 +74,11 @@ func generateNonce(gcm cipher.AEAD) []byte {
 func EncryptWithAESGCM(password, key []byte) ([]byte, []byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, nil, fmt.Errorf("could not encrypt the password: %v", err)
+		return nil, nil, &cerror.Error{Operation: "Encrypt", Cause: err.Error()}
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, nil, fmt.Errorf("could not encrypt the password: %v", err)
+		return nil, nil, &cerror.Error{Operation: "Encrypt", Cause: err.Error()}
 	}
 
 	nonce := generateNonce(gcm)
@@ -85,21 +89,50 @@ func EncryptWithAESGCM(password, key []byte) ([]byte, []byte, error) {
 }
 
 // Decrypts the secret using the salt and master password provided. If the password is incorrect, secret won't be decrypted.
-func DecryptWithAESGCM(secret secret.Secret, master, salt []byte) (string, error) {
+func DecryptWithAESGCM(secret secret.Record, master, salt []byte) (string, error) {
 	block, err := aes.NewCipher(GenerateDerivedKey(master, salt))
 	if err != nil {
-		return "", fmt.Errorf("couldn't decrypt the secret: %v", err)
+		return "", &cerror.Error{Operation: "Decrypt", Cause: err.Error()}
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("couldn't decrypt the secret: %v", err)
+		return "", &cerror.Error{Operation: "Decrypt", Cause: err.Error()}
 	}
 
 	plainText, err := gcm.Open(nil, secret.Nonce, secret.CipherText, nil)
 	if err != nil {
-		return "", fmt.Errorf("wrong password or corrupted data: %v", err.Error())
+		return "", &cerror.Error{Operation: "Decrypt", Cause: err.Error()}
 	}
 
 	return string(plainText), nil
+}
+
+
+var (
+	lowerRe   = regexp.MustCompile(`[a-z]`)
+	upperRe   = regexp.MustCompile(`[A-Z]`)
+	digitRe   = regexp.MustCompile(`\d`)
+	specialRe = regexp.MustCompile(`[^A-Za-z0-9]`)
+)
+
+func IsStrong(pwd []byte) error {
+	if len(pwd) < 8 {
+		return fmt.Errorf("master password must be longer than 8 characters")
+	}
+
+	if !lowerRe.Match(pwd) {
+		return fmt.Errorf("master password must include at least one lowercase character")
+	}
+	if !upperRe.Match(pwd) {
+		return fmt.Errorf("master password must include at least one uppercase character")
+	}
+	if !digitRe.Match(pwd) {
+		return fmt.Errorf("master password must include at least one digit")
+	}
+	if !specialRe.Match(pwd) {
+		return fmt.Errorf("master password must include at least one special character")
+	}
+
+	return nil
 }

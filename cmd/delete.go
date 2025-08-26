@@ -1,14 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
-	"mault/internal/crypto"
+	"mault/internal/prompt"
 	"mault/internal/storage"
 	"mault/internal/storage/base"
 	"mault/internal/storage/secret"
+	"os"
 
 	"github.com/urfave/cli/v2"
-	"gorm.io/gorm"
 )
 
 var deleteC *cli.Command = &cli.Command{
@@ -17,44 +18,33 @@ var deleteC *cli.Command = &cli.Command{
 	Aliases: []string{"del"},
 	Args:    false,
 	Action: func(ctx *cli.Context) error {
-		db, err := storage.AccessDatabase()
+		db, err := storage.PrepareDatabase()
 		if err != nil {
-			return fmt.Errorf("accessing the database error: %v", err)
+			return fmt.Errorf("delete command failed: %w", err)
 		}
 
-		if !base.IsInitialized(db) {
+		bm := base.NewManager(db)
+		if !bm.IsInitialized() {
 			return fmt.Errorf("you haven't initialized the mault yet")
 		}
 
-		return DeleteSecret(db)
+		sm := secret.NewManager(db)
+		return deleteSecret(ctx.Context, bm, sm)
 	},
 }
 
-func DeleteSecret(db *gorm.DB) error {
-	var key string
-	fmt.Print("Enter the name of the secret: ")
-	_, err := fmt.Scanln(&key)
+func deleteSecret(ctx context.Context, bm *base.Manager, sm *secret.Manager) error {
+	key, err := prompt.GetKey(os.Stdin)
 	if err != nil {
-		return fmt.Errorf("could not scan the key: %v", err.Error())
+		return err
 	}
 
-	master, err := crypto.ReadPassword("master password")
+	_, err = bm.Authenticate(ctx)
 	if err != nil {
-		return fmt.Errorf("reading password error: %v", err)
+		return err
 	}
 
-	salt, err := base.GetSalt(db)
-	if err != nil {
-		return fmt.Errorf("getting salt error: %v", err)
-	}
-
-	derivedKey := crypto.GenerateDerivedKey(master, salt)
-
-	if !base.IsMatch(db, derivedKey) {
-		return fmt.Errorf("authentication failed")
-	}
-
-	if err := secret.Delete(db, key); err != nil {
+	if err := sm.DeleteSecret(ctx, key); err != nil {
 		return fmt.Errorf("deleting secret error: %v", err)
 	}
 

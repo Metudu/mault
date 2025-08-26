@@ -1,14 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"mault/internal/crypto"
+	"mault/internal/prompt"
 	"mault/internal/storage"
 	"mault/internal/storage/base"
 	"mault/internal/storage/secret"
+	"os"
 
 	"github.com/urfave/cli/v2"
-	"gorm.io/gorm"
 )
 
 // getC is the command for decrypting the secret.
@@ -19,45 +21,38 @@ var getC *cli.Command = &cli.Command{
 	Usage: "Reveal a secret",
 	Args:  false,
 	Action: func(ctx *cli.Context) error {
-		db, err := storage.AccessDatabase()
+		db, err := storage.PrepareDatabase()
 		if err != nil {
-			return fmt.Errorf("accessing the database error: %v", err)
+			return fmt.Errorf("get command failed: %w", err)
 		}
 
-		if !base.IsInitialized(db) {
+		bm := base.NewManager(db)
+		if !bm.IsInitialized() {
 			return fmt.Errorf("you haven't initialized the mault yet")
 		}
 
-		return GetSecret(db)
+		sm := secret.NewManager(db)
+		return getSecret(ctx.Context, bm, sm)
 	},
 }
 
-func GetSecret(db *gorm.DB) error {
-	var key string
-	fmt.Print("Enter the key you want to get: ")
-	fmt.Scanln(&key)
-
-	master, err := crypto.ReadPassword("master")
+func getSecret(ctx context.Context, bm *base.Manager, sm *secret.Manager) error {
+	key, err := prompt.GetKey(os.Stdin)
 	if err != nil {
-		return fmt.Errorf("reading password error: %v", err)
+		return err
 	}
 
-	salt, err := base.GetSalt(db)
+	result, err := bm.Authenticate(ctx)
 	if err != nil {
-		return fmt.Errorf("getting salt error: %v", err)
+		return err
 	}
 
-	derivedKey := crypto.GenerateDerivedKey(master, salt)
-	if !base.IsMatch(db, derivedKey) {
-		return fmt.Errorf("authentication failed")
-	}
-
-	secret, err := secret.Get(db, key, master)
+	secret, err := sm.GetSecret(ctx, key)
 	if err != nil {
 		return fmt.Errorf("getting secret error: %v", err)
 	}
 
-	plainText, err := crypto.DecryptWithAESGCM(secret, master, salt)
+	plainText, err := crypto.DecryptWithAESGCM(*secret, result.Master, result.Salt)
 	if err != nil {
 		return fmt.Errorf("decryption error: %v", err)
 	}

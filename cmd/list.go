@@ -1,13 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"mault/internal/storage"
 	"mault/internal/storage/base"
 	"mault/internal/storage/secret"
 
 	"github.com/urfave/cli/v2"
-	"gorm.io/gorm"
 )
 
 var listC *cli.Command = &cli.Command{
@@ -16,23 +16,28 @@ var listC *cli.Command = &cli.Command{
 	Aliases: []string{"l", "ls"},
 	Args:    false,
 	Action: func(ctx *cli.Context) error {
-		db, err := storage.AccessDatabase()
+		db, err := storage.PrepareDatabase()
 		if err != nil {
-			return fmt.Errorf("accessing the database error: %v", err)
+			return fmt.Errorf("list command failed: %w", err)
 		}
-		ListSecrets(db)
 
-		if !base.IsInitialized(db) {
+		sm := secret.NewManager(db)
+		if err := listSecrets(ctx.Context, sm); err != nil {
+			return fmt.Errorf("listing secrets error: %w", err)
+		}
+
+		base := base.NewManager(db)
+		if !base.IsInitialized() {
 			fmt.Println("WARNING: You haven't initialized the mault yet!")
 		}
 		return nil
 	},
 }
 
-func ListSecrets(db *gorm.DB) error {
-	secrets, err := secret.List(db)
+func listSecrets(ctx context.Context, sm *secret.Manager) error {
+	secrets, err := sm.ListSecrets(ctx)
 	if err != nil {
-		return fmt.Errorf("listing secrets error: %v", err)
+		return fmt.Errorf("listing secrets error: %w", err)
 	}
 	if len(secrets) == 0 {
 		fmt.Println("No secrets yet.")
@@ -40,7 +45,7 @@ func ListSecrets(db *gorm.DB) error {
 	}
 
 	for _, secret := range secrets {
-		fmt.Printf("%v\t\t********\n", secret.Key)
+		fmt.Printf("%v\t\t********\n", secret)
 	}
 	return nil
 }

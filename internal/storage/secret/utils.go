@@ -5,7 +5,7 @@ import (
 	"math/big"
 )
 
-var charset = "abcdefghijklmnopqrstuvwxyz" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" + "0123456789" + "!@#$%^&*()-_=+[]{}<>?/|"
+var charset = "abcdefghijklmnopqrstuvwxyz" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" + "0123456789" + "!#%&*-_?"
 
 func GenerateRandom(length int) ([]byte, error) {
 	password := make([]byte, length)
